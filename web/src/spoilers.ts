@@ -2,11 +2,40 @@ import $ from "jquery";
 
 import * as util from "./util.ts";
 
+function mark_animating($spoiler: JQuery, animating: boolean): void {
+    if (animating) {
+        $spoiler.addClass("spoiler-animating");
+    } else {
+        $spoiler.removeClass("spoiler-animating");
+    }
+}
+
+function is_animating($spoiler: JQuery): boolean {
+    return $spoiler.hasClass("spoiler-animating");
+}
+
 function collapse_spoiler($spoiler: JQuery): void {
     const spoiler_height = $spoiler.height() ?? 0;
 
     // Set height to rendered height on next frame, then to zero on following
     // frame to allow CSS transition animation to work
+    // Also mark the spoiler as animating to guard against rapid clicks
+    mark_animating($spoiler, true);
+
+    // Ensure we clean up the animating state when the height transition ends
+    $spoiler.on("transitionend", (e) => {
+        // Only handle the height property's transition end; other properties
+        // like border and padding also transition.
+        const originalEvent = (e as unknown as {originalEvent?: {propertyName?: string}})
+            .originalEvent;
+        const propertyName = originalEvent?.propertyName ?? "";
+        if (propertyName !== "height") {
+            return;
+        }
+        mark_animating($spoiler, false);
+        $spoiler.off("transitionend");
+    });
+
     requestAnimationFrame(() => {
         $spoiler.height(`${spoiler_height}px`);
         $spoiler.removeClass("spoiler-content-open");
@@ -29,11 +58,20 @@ function expand_spoiler($spoiler: JQuery): void {
     // will trigger on the frame after this class change.
     $spoiler.addClass("spoiler-content-open");
 
-    $spoiler.on("transitionend", () => {
-        $spoiler.off("transitionend");
+    // Mark animating and clean up when the height transition completes
+    mark_animating($spoiler, true);
+    $spoiler.on("transitionend", (e) => {
+        const originalEvent = (e as unknown as {originalEvent?: {propertyName?: string}})
+            .originalEvent;
+        const propertyName = originalEvent?.propertyName ?? "";
+        if (propertyName !== "height") {
+            return;
+        }
         // When the CSS transition is over, reset the height to auto
         // This keeps things working if, e.g., the viewport is resized
         $spoiler.height("");
+        mark_animating($spoiler, false);
+        $spoiler.off("transitionend");
     });
 }
 
@@ -64,9 +102,23 @@ export function initialize(): void {
             return;
         }
 
-        // Allow selecting text inside a spoiler header.
+        // Allow selecting text inside a spoiler header, but only if the selection
+        // is within the header. If there's a selection elsewhere, treat this as a
+        // normal click (i.e., toggle the spoiler).
         const selection = document.getSelection();
         if (selection && selection.type === "Range") {
+            const anchorInHeader = selection.anchorNode !== null && this.contains(selection.anchorNode);
+            const focusInHeader = selection.focusNode !== null && this.contains(selection.focusNode);
+            if (anchorInHeader || focusInHeader) {
+                return;
+            }
+        }
+
+        // Prevent toggling while the open/close transition is in progress to avoid
+        // inconsistent UI states from rapid clicks.
+        if (is_animating($spoiler_content)) {
+            e.preventDefault();
+            e.stopPropagation();
             return;
         }
 
